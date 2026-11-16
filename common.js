@@ -43,6 +43,19 @@
         firebase.initializeApp(cfg);
         db = firebase.database();
         db.ref(".info/serverTimeOffset").on("value", s => { offset = s.val() || 0; });
+        // On attend la connexion (4 s au plus) : l'heure du serveur est alors connue avant le premier affichage d'une question
+        await new Promise(res => {
+          const ref = db.ref(".info/connected"), t = setTimeout(res, 4000);
+          const h = ref.on("value", s => { if (s.val()) { clearTimeout(t); ref.off("value", h); setTimeout(res, 150); } });
+        });
+      },
+      // Lecture / écriture directe par HTTPS : voie de secours quand la connexion « temps réel » reste bloquée
+      rest(path, method = "GET", body) {
+        return fetch(cfg.databaseURL.replace(/\/+$/, "") + "/" + path + ".json", {
+          method, cache: "no-store",
+          headers: body ? { "Content-Type": "application/json" } : undefined,
+          body: body ? JSON.stringify(body) : undefined
+        }).then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
       },
       // true / false à chaque connexion ou coupure avec le serveur (le SDK se reconnecte tout seul)
       onConnection: cb => db.ref(".info/connected").on("value", s => cb(!!s.val())),
@@ -120,6 +133,7 @@
       mode: "demo",
       ready: () => Promise.resolve(),
       onConnection: cb => cb(true),
+      rest: () => Promise.reject(new Error("pas de voie directe en mode démo")),
       get: path => Promise.resolve(getAt(load(), path)),
       set: (path, val) => write(t => setAt(t, path, stamp(val))),
       update: (path, obj) => write(t => { for (const k in obj) setAt(t, path + "/" + k, stamp(obj[k])); }),

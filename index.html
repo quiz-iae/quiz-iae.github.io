@@ -9,13 +9,13 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800;900&display=swap" rel="stylesheet">
 <!-- « ?v=… » : à augmenter à chaque mise à jour, pour que les téléphones rechargent tous les fichiers ensemble -->
-<link rel="stylesheet" href="style.css?v=5">
+<link rel="stylesheet" href="style.css?v=6">
 </head>
 <body class="player">
-<main id="app"></main>
+<main id="app"><p class="loading">Connexion…</p></main>
 
-<script src="config.js?v=5"></script>
-<script src="common.js?v=5"></script>
+<script src="config.js?v=6"></script>
+<script src="common.js?v=6"></script>
 <script>
 (async function () {
   "use strict";
@@ -29,6 +29,8 @@
   const setId = v => { store.set(KEY, v, "session"); if (DB.mode === "firebase") store.set(KEY, v, "local"); };
   const delId = () => { store.del(KEY, "session"); store.del(KEY, "local"); };
   let reclaim = null;             // pseudo déjà pris que l'étudiant a confirmé être le sien
+  const checked = {};             // question -> on a déjà cherché sur le serveur une réponse envoyée avant un rechargement
+  let pollId = null, renderFails = 0;
 
   let code = null, pid = null, me = null, st = null;
   const answered = {};            // question -> réponse choisie
@@ -103,6 +105,8 @@
     me = null; st = null; celebrated = jokerArmed = jokerSent = -1; introSeen = false;
     for (const q in answered) delete answered[q];
     for (const q in refused) delete refused[q];
+    for (const q in checked) delete checked[q];
+    startPoll();
     unsubs.push(DB.on(`games/${code}/state`, v => { st = v; onState(); }));
     unsubs.push(DB.on(`games/${code}/players/${pid}`, v => {
       const had = me;
@@ -115,20 +119,43 @@
 
   function leave(msg) {
     delId();
+    clearInterval(pollId);
     code = pid = me = st = null;
     joinScreen(msg, "");
   }
 
-  async function onState() {
+  function onState() {
     if (!st) return leave("Cette partie n'existe plus.");
-    // Après un rechargement : a-t-on déjà répondu à la question en cours ?
-    if (st.phase === "question" && answered[st.q] === undefined) {
-      const a = await DB.get(`games/${code}/answers/${st.q}/${pid}`);
-      if (a && Number.isInteger(a.a)) answered[st.q] = a.a;
-      else if (a && typeof a.x === "string") answered[st.q] = a.x;
-      if (a && a.j) jokerSent = st.q;
+    render(); // tout de suite : l'affichage n'attend jamais une réponse du serveur
+    // Après un rechargement : a-t-on déjà répondu à la question en cours ? (vérifié en arrière-plan)
+    if (st.phase === "question" && answered[st.q] === undefined && !checked[st.q]) {
+      const q = st.q;
+      checked[q] = true;
+      DB.get(`games/${code}/answers/${q}/${pid}`).then(a => {
+        if (!a || answered[q] !== undefined) return;
+        if (Number.isInteger(a.a)) answered[q] = a.a;
+        else if (typeof a.x === "string") answered[q] = a.x;
+        else return;
+        if (a.j) jokerSent = q;
+        if (st && st.q === q) render();
+      }).catch(() => { checked[q] = false; });
     }
-    render();
+  }
+
+  // Filet de sécurité : si la connexion « temps réel » reste bloquée (changement de réseau, veille…), on relit l'état par HTTPS
+  // toutes les 3 secondes, et on ne le prend en compte que s'il est plus avancé que celui qu'on affiche.
+  const PHASE_ORDER = { lobby: 0, intro: 1, "get-ready": 2, question: 3, reveal: 4, leaderboard: 5, podium: 6, end: 7 };
+  const seq = s => !s ? -1000 : (s.phase === "podium" || s.phase === "end" ? 1000 : 0) + (s.q == null ? -1 : s.q) * 10 + (PHASE_ORDER[s.phase] || 0);
+  function startPoll() {
+    clearInterval(pollId);
+    if (DB.mode !== "firebase") return;
+    pollId = setInterval(async () => {
+      if (!code || document.visibilityState !== "visible") return;
+      try {
+        const s = await DB.rest(`games/${code}/state`);
+        if (s && seq(s) > seq(st)) { st = s; onState(); }
+      } catch (e) { /* pas de réseau : le bandeau de connexion prévient déjà */ }
+    }, 3000);
   }
 
   // ---------- Joker quitte ou double (un par partie) ----------
@@ -161,7 +188,19 @@
 
   const remaining = () => st.duration * 1000 - (DB.now() - st.startedAt);
 
+  // Si l'affichage plante, on réessaie deux fois, puis on propose de recharger plutôt que de laisser un écran figé
   function render() {
+    try { renderInner(); renderFails = 0; }
+    catch (e) {
+      console.error("Affichage :", e);
+      if (++renderFails <= 2) { setTimeout(render, 700); return; }
+      app.innerHTML = `<div class="msg"><div class="big-emoji">⚠️</div><h2>Petit souci d'affichage</h2>
+        <p>Appuie sur le bouton : tu retrouveras ta place et ton score.</p>
+        <button class="btn big" onclick="location.reload()">↻ Recharger</button></div>`;
+    }
+  }
+
+  function renderInner() {
     clearInterval(timerId);
     if (!st || !me) return;
     // Correction : les points défilent et le téléphone vibre, une seule fois par question
@@ -344,9 +383,18 @@
     render();
     const payload = typeof k === "string" ? { x: k.slice(0, 60), t: DB.TS } : { a: k, t: DB.TS };
     if (joker) payload.j = 1;
-    try { await DB.set(`games/${code}/answers/${q}/${pid}`, payload); }
+    const path = `games/${code}/answers/${q}/${pid}`;
+    // Sans confirmation du serveur au bout de 2,5 s (connexion bloquée), la réponse repart aussi par HTTPS.
+    // Si les deux arrivent, la seconde est simplement ignorée par les règles (une seule réponse par question).
+    let acked = false;
+    const backup = setTimeout(() => { if (!acked) DB.rest(path, "PUT", payload).catch(() => {}); }, 2500);
+    try { await DB.set(path, payload); acked = true; clearTimeout(backup); }
     catch (e) {
-      // Refus du serveur (règles Firebase pas à jour…) : le dire, plutôt qu'afficher « Réponse envoyée »
+      clearTimeout(backup);
+      // Refusée : soit une réponse existe déjà (double appui, envoi de secours arrivé le premier), soit le serveur la refuse vraiment
+      let ex = null;
+      try { ex = await DB.get(path); } catch (e2) {}
+      if (ex && (Number.isInteger(ex.a) || typeof ex.x === "string")) { acked = true; return; }
       refused[q] = true;
       if (joker) jokerSent = -1;
       if (st && st.q === q) render();
