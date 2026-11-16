@@ -17,12 +17,17 @@
   const forceDemo = /[?&]demo\b/.test(location.search);
   const online = !!cfg && !forceDemo;
 
-  function loadScript(src) {
+  // Charge un script externe ; un deuxième essai est tenté après une seconde (réseau instable)
+  function loadScript(src, retry = true) {
     return new Promise((resolve, reject) => {
       const s = document.createElement("script");
       s.src = src;
       s.onload = resolve;
-      s.onerror = () => reject(new Error("Impossible de charger " + src + " (pas de connexion internet ?)"));
+      s.onerror = () => {
+        s.remove();
+        if (retry) setTimeout(() => loadScript(src, false).then(resolve, reject), 1000);
+        else reject(new Error("Impossible de charger " + src + " (pas de connexion internet ?)"));
+      };
       document.head.appendChild(s);
     });
   }
@@ -39,6 +44,8 @@
         db = firebase.database();
         db.ref(".info/serverTimeOffset").on("value", s => { offset = s.val() || 0; });
       },
+      // true / false à chaque connexion ou coupure avec le serveur (le SDK se reconnecte tout seul)
+      onConnection: cb => db.ref(".info/connected").on("value", s => cb(!!s.val())),
       get: path => db.ref(path).get().then(s => s.val()),
       set: (path, val) => db.ref(path).set(val),
       update: (path, obj) => db.ref(path).update(obj),
@@ -112,6 +119,7 @@
     return {
       mode: "demo",
       ready: () => Promise.resolve(),
+      onConnection: cb => cb(true),
       get: path => Promise.resolve(getAt(load(), path)),
       set: (path, val) => write(t => setAt(t, path, stamp(val))),
       update: (path, obj) => write(t => { for (const k in obj) setAt(t, path + "/" + k, stamp(obj[k])); }),
@@ -156,6 +164,8 @@
       if (k < 1) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
+    // Si l'affichage est en pause (fenêtre masquée ou réduite), la valeur finale s'affiche quand même
+    setTimeout(() => { el.textContent = to; }, ms + 200);
   }
 
   function studentUrl() {
@@ -183,5 +193,29 @@
     return AVATARS[h % AVATARS.length];
   }
 
-  window.QL = { DB: online ? firebaseDB() : demoDB(), shape, esc, sleep, ordinal, countUp, studentUrl, store, JOKER_PENALTY, avatar };
+  const DBX = online ? firebaseDB() : demoDB();
+
+  // Bandeau « connexion perdue » : une micro-coupure (moins de 2,5 s) ne déclenche rien ; au retour, un message vert bref
+  function watchConnection() {
+    const bar = document.createElement("div");
+    bar.className = "net-bar"; bar.hidden = true;
+    document.body.appendChild(bar);
+    let down = false, t1 = null, t2 = null;
+    DBX.onConnection(up => {
+      clearTimeout(t1); clearTimeout(t2);
+      if (up) {
+        if (!down) { bar.hidden = true; return; }
+        down = false;
+        bar.className = "net-bar ok"; bar.textContent = "✅ Connexion rétablie"; bar.hidden = false;
+        t2 = setTimeout(() => { bar.hidden = true; }, 2500);
+      } else {
+        t1 = setTimeout(() => {
+          down = true;
+          bar.className = "net-bar"; bar.textContent = "⚠️ Connexion perdue : reconnexion en cours…"; bar.hidden = false;
+        }, 2500);
+      }
+    });
+  }
+
+  window.QL = { DB: DBX, shape, esc, sleep, ordinal, countUp, studentUrl, store, JOKER_PENALTY, avatar, watchConnection };
 })();

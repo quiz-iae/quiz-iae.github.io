@@ -212,6 +212,23 @@ body.host { font-size: clamp(15px, 1.45vw, 34px); }
 .intro-count { flex: 1; font-weight: 800; }
 .intro-count b { font-size: 1.6em; color: var(--gold); }
 
+/* Bandeau de connexion (prof et téléphones) et bouton « recharger » */
+.net-bar { position: fixed; left: 0; right: 0; top: 0; z-index: 60; background: var(--bad); color: #fff; text-align: center; font-weight: 800; padding: .5em 1em; box-shadow: 0 3px 0 rgba(0, 0, 0, .25); }
+.net-bar.ok { background: var(--good); }
+.net-bar[hidden] { display: none; }
+.me .who { display: flex; align-items: center; gap: .5em; min-width: 0; }
+.rl { background: rgba(255, 255, 255, .18); color: #fff; border: 0; border-radius: 6px; width: 1.9em; height: 1.9em; font-size: .95em; line-height: 1; flex: none; }
+.pin-tag { position: fixed; left: .6em; bottom: .6em; z-index: 20; background: rgba(0, 0, 0, .3); color: #fff; border-radius: 8px; padding: .25em .7em; font-weight: 700; font-size: .75em; opacity: .75; }
+.pin-tag[hidden] { display: none; }
+.toast-err { position: fixed; left: .8em; bottom: .8em; z-index: 40; background: #fff; color: var(--cardink); border-left: 6px solid var(--bad); border-radius: 8px; padding: .6em .9em; font-weight: 700; display: flex; gap: .8em; align-items: center; font-size: .85em; box-shadow: 0 4px 0 rgba(0, 0, 0, .25); }
+.resume b + .resume-info { color: var(--muted); font-weight: 700; }
+.resume-code { background: rgba(0, 0, 0, .2); border-radius: 10px; padding: .6em 1em; width: 100%; }
+.resume-code summary { cursor: pointer; font-weight: 700; color: var(--muted); }
+.resume-code .rc-form { display: flex; flex-wrap: wrap; gap: .6em; align-items: center; margin-top: .7em; }
+.resume-code input, .resume-code select { font: inherit; font-weight: 800; border: 0; border-radius: 6px; padding: .4em .6em; color: var(--cardink); }
+.resume-code input { width: 10em; }
+.rc-err { color: #ffb4b6; font-weight: 700; font-size: .85em; min-height: 1.2em; margin-top: .4em; }
+
 /* Annonce des questions à double points */
 .announce { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .6em; text-align: center; animation: flash .35s steps(1) infinite; }
 .announce h1 { font-size: 4.2em; line-height: 1.1; font-weight: 900; color: var(--gold); text-shadow: 0 .06em 0 rgba(0, 0, 0, .3); animation: zoomin2 .6s cubic-bezier(.3, 1.6, .5, 1); }

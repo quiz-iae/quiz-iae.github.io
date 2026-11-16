@@ -9,20 +9,26 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800;900&display=swap" rel="stylesheet">
 <!-- « ?v=… » : à augmenter à chaque mise à jour, pour que les téléphones rechargent tous les fichiers ensemble -->
-<link rel="stylesheet" href="style.css?v=4">
+<link rel="stylesheet" href="style.css?v=5">
 </head>
 <body class="player">
 <main id="app"></main>
 
-<script src="config.js?v=4"></script>
-<script src="common.js?v=4"></script>
+<script src="config.js?v=5"></script>
+<script src="common.js?v=5"></script>
 <script>
 (async function () {
   "use strict";
   const { DB, esc, shape, ordinal, countUp, store, JOKER_PENALTY } = QL;
   const avatar = QL.avatar || (() => "🙂");
   const app = document.getElementById("app");
-  const KEY = "quizlive-player"; // par onglet : plusieurs onglets = plusieurs joueurs (utile en mode démo)
+  const KEY = "quizlive-player";
+  // Identité du joueur : par onglet en mode démo (plusieurs onglets = plusieurs joueurs). En ligne, elle est aussi gardée
+  // dans le navigateur : un étudiant qui ferme sa page ou son navigateur retrouve sa place en rouvrant le lien.
+  const getId = () => store.get(KEY, "session") || (DB.mode === "firebase" ? store.get(KEY, "local") : null);
+  const setId = v => { store.set(KEY, v, "session"); if (DB.mode === "firebase") store.set(KEY, v, "local"); };
+  const delId = () => { store.del(KEY, "session"); store.del(KEY, "local"); };
+  let reclaim = null;             // pseudo déjà pris que l'étudiant a confirmé être le sien
 
   let code = null, pid = null, me = null, st = null;
   const answered = {};            // question -> réponse choisie
@@ -66,14 +72,25 @@
       if (!s) return err("Code introuvable. Vérifie le code affiché à l'écran.");
       if (s.phase === "end" || s.phase === "podium") return err("Cette partie est terminée.");
       const ps = (await DB.get(`games/${c}/players`)) || {};
-      const saved = store.get(KEY, "session");
-      const id = saved && saved.code === c && saved.pid ? saved.pid : Math.random().toString(36).slice(2, 10);
-      const taken = Object.entries(ps).some(([k, p]) => k !== id && String(p.name || "").toLowerCase() === name.toLowerCase());
-      if (taken) return err("Ce pseudo est déjà pris, choisis-en un autre.");
+      const saved = getId();
+      let id = saved && saved.code === c && saved.pid ? saved.pid : Math.random().toString(36).slice(2, 10);
+      const taken = Object.entries(ps).find(([k, p]) => k !== id && String(p.name || "").toLowerCase() === name.toLowerCase());
+      if (taken) {
+        // Salle d'attente : un pseudo en double est refusé. Partie lancée : c'est sans doute un étudiant qui revient
+        // (navigateur fermé, autre téléphone) : il confirme en rappuyant, et retrouve son score.
+        const started = s.phase !== "lobby" && s.phase !== "intro";
+        const key = c + "|" + name.toLowerCase();
+        if (!started) return err("Ce pseudo est déjà pris, choisis-en un autre.");
+        if (reclaim !== key) {
+          reclaim = key;
+          return err("Ce pseudo est déjà dans la partie. Si c'est bien toi qui reviens, appuie encore sur « C'est parti ! » pour retrouver ta place. Sinon, choisis un autre pseudo.");
+        }
+        id = taken[0];
+      }
       if (ps[id]) await DB.update(`games/${c}/players/${id}`, { name });
       else await DB.set(`games/${c}/players/${id}`, { name, score: 0, streak: 0 });
       code = c; pid = id;
-      store.set(KEY, { code, pid }, "session");
+      setId({ code, pid });
       enterGame();
     } catch (e) {
       err("Connexion impossible. Vérifie ton réseau (Wi-Fi ou 4G) et réessaie.");
@@ -97,7 +114,7 @@
   }
 
   function leave(msg) {
-    store.del(KEY, "session");
+    delId();
     code = pid = me = st = null;
     joinScreen(msg, "");
   }
@@ -210,7 +227,7 @@
     document.body.className = "player " + mood + (celebrate ? " celebrate" : "");
     const score = me.score || 0;
     app.innerHTML = `
-      <header class="me"><span>${esc(me.name)}</span>
+      <header class="me"><span class="who"><button class="rl" id="rl" title="Un souci ? Recharger la page (tu retrouves ta place)">↻</button>${esc(me.name)}</span>
         ${jokerLeft() && st.phase !== "end" ? '<span class="jk" title="Joker disponible">🃏</span>' : ""}
         <span class="score"><span data-count="${score}">${celebrate ? score - (me.lastPoints || 0) : score}</span> pts</span></header>
       ${body}`;
@@ -218,6 +235,7 @@
       app.querySelectorAll("[data-count]").forEach(el => countUp(el, +el.textContent, +el.dataset.count, 1200));
       if (navigator.vibrate) navigator.vibrate(me.lastCorrect ? [60, 50, 60] : 300);
     }
+    document.getElementById("rl").onclick = () => location.reload();
     const jb = document.getElementById("joker");
     if (jb) jb.onclick = () => {
       jokerArmed = jokerArmed === st.q ? -1 : st.q;
@@ -345,11 +363,12 @@
   try {
     await DB.ready();
   } catch (e) {
-    app.innerHTML = `<div class="error-box">${esc(e.message)}</div>`;
+    app.innerHTML = `<div class="error-box">${esc(e.message)}<br><button class="btn" onclick="location.reload()">↻ Réessayer</button></div>`;
     return;
   }
+  QL.watchConnection();
   const urlCode = (new URLSearchParams(location.search).get("code") || "").replace(/\D/g, "");
-  const saved = store.get(KEY, "session");
+  const saved = getId();
   if (saved && saved.code && (!urlCode || urlCode === saved.code)) {
     const [p, s] = await Promise.all([DB.get(`games/${saved.code}/players/${saved.pid}`), DB.get(`games/${saved.code}/state`)]);
     if (p && s) { code = saved.code; pid = saved.pid; return enterGame(); }
