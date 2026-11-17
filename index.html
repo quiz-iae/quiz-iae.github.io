@@ -9,13 +9,13 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800;900&display=swap" rel="stylesheet">
 <!-- « ?v=… » : à augmenter à chaque mise à jour, pour que les téléphones rechargent tous les fichiers ensemble -->
-<link rel="stylesheet" href="style.css?v=7">
+<link rel="stylesheet" href="style.css?v=8">
 </head>
 <body class="player">
 <main id="app"><p class="loading">Connexion…</p></main>
 
-<script src="config.js?v=7"></script>
-<script src="common.js?v=7"></script>
+<script src="config.js?v=8"></script>
+<script src="common.js?v=8"></script>
 <script>
 (async function () {
   "use strict";
@@ -184,7 +184,7 @@
     if (sabLeft()) {
       const on = sabArmed && sabArmed.q === st.q;
       buttons.push(`<button class="joker sab${on ? " on" : ""}" id="sabotage">${on
-        ? `🎯 Cible : <b>${esc(sabArmed.name)}</b> · −${SABOTAGE_PENALTY} s'il a juste`
+        ? `🎯 Cible : <b>${esc(sabArmed.name)}</b> · si tu as juste`
         : `🎯 Saboter un joueur`}</button>`);
     }
     return buttons.length ? `<div class="jokerbar">${buttons.join("")}</div>` : "";
@@ -210,7 +210,7 @@
           ${st.secret ? "" : `<span class="pk-r">${k + 1}</span>`}<span class="pk-n">${esc(p.name)}</span>${st.secret ? "" : `<small>${p.score}</small>`}</button>`).join("");
     return `<div class="picker" id="picker"><div class="picker-box">
       <h3>🎯 Qui veux-tu saboter ?</h3>
-      <p>Il perd <b>${SABOTAGE_PENALTY} points</b> s'il a la bonne réponse. Tout le monde verra que c'est toi. S'il se trompe, ton joker est perdu pour rien.</p>
+      <p><b>Il faut que tu aies la bonne réponse.</b> Alors ce joueur marque <b>0 point</b> s'il a juste, ou perd <b>${SABOTAGE_PENALTY} points</b> s'il se trompe. Tout le monde verra que c'est toi. Si tu te trompes, ton joker est perdu.</p>
       <div class="picker-list">${list}</div>
       <div class="picker-actions">
         ${sabArmed && sabArmed.q === st.q ? '<button class="btn" id="pk-clear">Retirer la cible</button>' : ""}
@@ -267,8 +267,8 @@
                 <p>Ton pseudo s'affiche à l'écran. Le quiz va bientôt commencer…</p>
                 <p class="joker-info">🃏 Tu as <b>${JOKERS_X2} jokers quitte ou double</b> pour toute la partie. Active-en un avant de répondre :
                   points x2 si tu as juste, −${JOKER_PENALTY} si tu te trompes.</p>
-                <p class="joker-info">🎯 Tu as aussi <b>${SABOTAGES} joker sabotage</b> : vise un joueur, il perd ${SABOTAGE_PENALTY} points
-                  s'il a la bonne réponse. Tout le monde verra que c'est toi !</p></div>`;
+                <p class="joker-info">🎯 Tu as aussi <b>${SABOTAGES} joker sabotage</b> : si tu as la bonne réponse, le joueur que tu vises
+                  marque 0 point (s'il avait juste) ou perd ${SABOTAGE_PENALTY} points (s'il s'est trompé). Tout le monde verra que c'est toi !</p></div>`;
         break;
       case "intro": {
         // Présentation des joueurs : le téléphone s'allume quand son pseudo passe à l'écran
@@ -423,10 +423,11 @@
     const pts = me.lastPoints || 0;
     // Sabotages de cette question : celui que j'ai lancé, et celui que j'ai subi
     const sab = me.lastSab, hurt = me.lastHit;
-    const sabTags = (sab ? (sab.r === "hit" ? `<p class="sab-tag good">🎯 Sabotage réussi : ${esc(sab.n)} perd ${sab.p} points !</p>`
-        : sab.r === "miss" ? `<p class="sab-tag">💨 Sabotage raté : ${esc(sab.n)} s'est trompé… ton joker est perdu.</p>`
+    const sabTags = (sab ? (sab.r === "hit"
+          ? `<p class="sab-tag good">🎯 Sabotage réussi : ${esc(sab.n)} ${sab.k === "zero" ? "ne marque aucun point" : `perd ${sab.p} points`} !</p>`
+        : sab.r === "miss" ? `<p class="sab-tag">💨 Sabotage raté : il fallait avoir la bonne réponse. Ton joker est perdu.</p>`
         : `<p class="sab-tag">🛡️ ${esc(sab.n)} avait déjà été visé avant toi : ton joker sabotage t'est rendu.</p>`) : "")
-      + (hurt ? `<p class="sab-tag hurt">😱 ${esc(hurt.by)} t'a sabordé : −${hurt.p} points</p>` : "");
+      + (hurt ? `<p class="sab-tag hurt">😱 ${esc(hurt.by)} t'a sabordé : ${hurt.k === "zero" ? "tes points sont annulés (0)" : `−${hurt.p} points`}</p>` : "");
     if (me.lastCorrect) {
       return {
         mood: "good",
@@ -443,8 +444,8 @@
       mood: "bad",
       html: `<div class="msg"><div class="big-emoji">${missed ? "⏰" : "❌"}</div>
              <h2>${missed ? "Pas de réponse" : "Raté !"}</h2>
-             ${me.lastJoker ? `<p class="pts">−<span data-count="${-pts}">${celebrate ? 0 : -pts}</span></p>
-               <p class="joker-tag">🃏 Joker perdu…</p>` : ""}
+             ${pts < 0 ? `<p class="pts">−<span data-count="${-pts}">${celebrate ? 0 : -pts}</span></p>` : ""}
+             ${me.lastJoker ? '<p class="joker-tag">🃏 Joker perdu…</p>' : ""}
              ${!missed && st.kind === "texte" ? `<p>Ta réponse : « ${esc(me.lastAnswer)} »</p>` : ""}
              <p class="goodans">La bonne réponse : <b>${goodAnswer}</b></p>${sabTags}${rank}</div>`
     };
