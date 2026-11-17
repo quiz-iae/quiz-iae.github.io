@@ -197,6 +197,14 @@
 
   // Joker quitte ou double : points perdus quand il tombe sur une mauvaise réponse (lu par le prof et les téléphones)
   const JOKER_PENALTY = 500;
+  // Jokers par partie : 2 jokers « quitte ou double » (x2 si juste, −500 si faux) et 1 joker « sabotage » (−500 au joueur visé
+  // s'il a la bonne réponse). Un seul joker de chaque sorte par question. Modifiez ces nombres pour changer la règle.
+  const JOKERS_X2 = 2;
+  const SABOTAGES = 1;
+  const SABOTAGE_PENALTY = 500;
+  // Jokers déjà utilisés par un joueur (les anciennes parties n'avaient qu'un champ `jokerQ`)
+  const jokersUsed = p => !p ? 0 : p.nJ != null ? p.nJ : p.jokerQ != null ? 1 : 0;
+  const sabotagesUsed = p => (p && p.nS) || 0;
 
   // Un avatar animal par joueur, toujours le même pour un même identifiant (écran de présentation)
   const AVATARS = ["🦊", "🐼", "🐸", "🦁", "🐯", "🐙", "🦄", "🐧", "🐨", "🦉", "🐝", "🐢", "🦖", "🐬", "🦩", "🐹",
@@ -231,5 +239,5 @@
     });
   }
 
-  window.QL = { DB: DBX, shape, esc, sleep, ordinal, countUp, studentUrl, store, JOKER_PENALTY, avatar, watchConnection };
+  window.QL = { DB: DBX, shape, esc, sleep, ordinal, countUp, studentUrl, store, JOKER_PENALTY, JOKERS_X2, SABOTAGES, SABOTAGE_PENALTY, jokersUsed, sabotagesUsed, avatar, watchConnection };
 })();

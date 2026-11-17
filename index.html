@@ -9,17 +9,18 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800;900&display=swap" rel="stylesheet">
 <!-- « ?v=… » : à augmenter à chaque mise à jour, pour que les téléphones rechargent tous les fichiers ensemble -->
-<link rel="stylesheet" href="style.css?v=6">
+<link rel="stylesheet" href="style.css?v=7">
 </head>
 <body class="player">
 <main id="app"><p class="loading">Connexion…</p></main>
 
-<script src="config.js?v=6"></script>
-<script src="common.js?v=6"></script>
+<script src="config.js?v=7"></script>
+<script src="common.js?v=7"></script>
 <script>
 (async function () {
   "use strict";
-  const { DB, esc, shape, ordinal, countUp, store, JOKER_PENALTY } = QL;
+  const { DB, esc, shape, ordinal, countUp, store, JOKER_PENALTY, JOKERS_X2, SABOTAGES, SABOTAGE_PENALTY, jokersUsed, sabotagesUsed } = QL;
+  const fmtSecs = ms => (ms / 1000).toFixed(1).replace(".", ",") + " s";
   const avatar = QL.avatar || (() => "🙂");
   const app = document.getElementById("app");
   const KEY = "quizlive-player";
@@ -38,6 +39,9 @@
   let celebrated = -1;            // dernière question dont la correction a été animée
   let jokerArmed = -1;            // question sur laquelle le joker est activé (pas encore envoyé)
   let jokerSent = -1;             // question sur laquelle le joker est parti avec la réponse
+  let sabArmed = null;            // { q, id, name } : cible choisie pour le sabotage de la question q (pas encore envoyé)
+  let sabSent = null;             // { q, name } : sabotage parti avec la réponse
+  let pickerOpen = false, roster = null; // liste des joueurs à viser (null = chargement)
   let introSeen = false;          // mon pseudo est déjà passé à l'écran de présentation
   let timerId = null;
   const unsubs = [];
@@ -103,6 +107,7 @@
   function enterGame() {
     unsubs.splice(0).forEach(u => u());
     me = null; st = null; celebrated = jokerArmed = jokerSent = -1; introSeen = false;
+    sabArmed = sabSent = null; pickerOpen = false; roster = null;
     for (const q in answered) delete answered[q];
     for (const q in refused) delete refused[q];
     for (const q in checked) delete checked[q];
@@ -137,6 +142,10 @@
         else if (typeof a.x === "string") answered[q] = a.x;
         else return;
         if (a.j) jokerSent = q;
+        if (typeof a.s === "string") {
+          sabSent = { q, name: null };
+          DB.get(`games/${code}/players/${a.s}/name`).then(n => { if (sabSent && sabSent.q === q) { sabSent.name = n; if (st && st.q === q) render(); } }).catch(() => {});
+        }
         if (st && st.q === q) render();
       }).catch(() => { checked[q] = false; });
     }
@@ -158,14 +167,54 @@
     }, 3000);
   }
 
-  // ---------- Joker quitte ou double (un par partie) ----------
-  const jokerLeft = () => !!me && me.jokerQ == null && jokerSent < 0;
+  // ---------- Jokers : quitte ou double (JOKERS_X2 par partie) et sabotage (SABOTAGES par partie) ----------
+  // Un joker envoyé avec la réponse n'est compté par le prof qu'à la correction : on le décompte ici en attendant
+  const jokersLeft = () => !me ? 0 : Math.max(0, JOKERS_X2 - jokersUsed(me) - (jokerSent === st.q && me.lastQ !== st.q ? 1 : 0));
+  const jokerLeft = () => jokersLeft() > 0;
+  const sabLeft = () => !!me && SABOTAGES - sabotagesUsed(me) - (sabSent && sabSent.q === st.q && me.lastQ !== st.q ? 1 : 0) > 0;
   function jokerButton() {
-    if (!jokerLeft() || st.kind === "ouverte" || answered[st.q] !== undefined) return "";
-    const on = jokerArmed === st.q;
-    return `<button class="joker${on ? " on" : ""}" id="joker">${on
-      ? `🃏 Joker activé : x2 si juste, −${JOKER_PENALTY} si faux`
-      : "🃏 Jouer mon joker sur cette question"}</button>`;
+    if (st.kind === "ouverte" || answered[st.q] !== undefined) return "";
+    const buttons = [];
+    if (jokerLeft()) {
+      const on = jokerArmed === st.q;
+      buttons.push(`<button class="joker${on ? " on" : ""}" id="joker">${on
+        ? `🃏 Joker activé : x2 si juste, −${JOKER_PENALTY} si faux`
+        : `🃏 Joker x2 (${jokersLeft()} restant${jokersLeft() > 1 ? "s" : ""})`}</button>`);
+    }
+    if (sabLeft()) {
+      const on = sabArmed && sabArmed.q === st.q;
+      buttons.push(`<button class="joker sab${on ? " on" : ""}" id="sabotage">${on
+        ? `🎯 Cible : <b>${esc(sabArmed.name)}</b> · −${SABOTAGE_PENALTY} s'il a juste`
+        : `🎯 Saboter un joueur`}</button>`);
+    }
+    return buttons.length ? `<div class="jokerbar">${buttons.join("")}</div>` : "";
+  }
+
+  // La liste des joueurs à viser : au classement, sauf pendant le final secret (alors par ordre alphabétique, sans scores)
+  async function openPicker() {
+    pickerOpen = true; roster = null; render();
+    try {
+      // Jamais d'attente sans fin : au bout de 5 s, on abandonne la liste (le joueur peut fermer la fenêtre et répondre normalement)
+      const ps = (await Promise.race([DB.get(`games/${code}/players`), new Promise((_, no) => setTimeout(() => no(new Error("délai")), 5000))])) || {};
+      roster = Object.entries(ps).filter(([id, p]) => id !== pid && p && p.name).map(([id, p]) => ({ id, name: String(p.name), score: p.score || 0 }));
+      roster.sort(st && st.secret ? (a, b) => a.name.localeCompare(b.name, "fr") : (a, b) => b.score - a.score || a.name.localeCompare(b.name, "fr"));
+    } catch (e) { roster = "erreur"; }
+    if (pickerOpen) render();
+  }
+  function pickerHtml() {
+    if (!pickerOpen) return "";
+    const list = roster === null ? '<p class="pk-info">Chargement des joueurs…</p>'
+      : roster === "erreur" ? '<p class="pk-info">Liste indisponible pour l\'instant. Ferme cette fenêtre et réponds sans sabotage, ou réessaie dans un instant.</p>'
+      : !roster.length ? '<p class="pk-info">Personne d\'autre à viser pour l\'instant.</p>'
+      : roster.map((p, k) => `<button class="pk${sabArmed && sabArmed.q === st.q && sabArmed.id === p.id ? " on" : ""}" data-id="${esc(p.id)}">
+          ${st.secret ? "" : `<span class="pk-r">${k + 1}</span>`}<span class="pk-n">${esc(p.name)}</span>${st.secret ? "" : `<small>${p.score}</small>`}</button>`).join("");
+    return `<div class="picker" id="picker"><div class="picker-box">
+      <h3>🎯 Qui veux-tu saboter ?</h3>
+      <p>Il perd <b>${SABOTAGE_PENALTY} points</b> s'il a la bonne réponse. Tout le monde verra que c'est toi. S'il se trompe, ton joker est perdu pour rien.</p>
+      <div class="picker-list">${list}</div>
+      <div class="picker-actions">
+        ${sabArmed && sabArmed.q === st.q ? '<button class="btn" id="pk-clear">Retirer la cible</button>' : ""}
+        <button class="btn ghost" id="pk-close">Fermer</button></div></div></div>`;
   }
 
   // ---------- Le rival : se comparer au joueur juste devant ----------
@@ -206,16 +255,20 @@
     // Correction : les points défilent et le téléphone vibre, une seule fois par question
     const celebrate = st.phase === "reveal" && me.lastQ === st.q && st.kind !== "ouverte" && celebrated !== st.q;
     if (celebrate) celebrated = st.q;
-    // Le joker envoyé n'a pas été retenu (réponse hors délai) : il redevient disponible
-    if (st.phase === "reveal" && me.lastQ === st.q && jokerSent === st.q && me.jokerQ == null) jokerSent = -1;
+    // Un joker envoyé qui n'a pas été retenu (réponse hors délai, sabotage rendu) redevient disponible
+    if (st.phase === "reveal" && me.lastQ === st.q && jokerSent === st.q && !me.lastJoker) jokerSent = -1;
+    if (st.phase === "reveal" && me.lastQ === st.q && sabSent && sabSent.q === st.q && !(me.lastSab && me.lastSab.r !== "blocked")) sabSent = null;
+    if (st.phase !== "question" && st.phase !== "get-ready") pickerOpen = false;
     const typed = document.getElementById("txt") ? document.getElementById("txt").value : "";
     let body = "", mood = "";
     switch (st.phase) {
       case "lobby":
         body = `<div class="msg"><div class="big-emoji">✅</div><h2>Tu es dans la partie !</h2>
                 <p>Ton pseudo s'affiche à l'écran. Le quiz va bientôt commencer…</p>
-                <p class="joker-info">🃏 Tu as <b>un joker quitte ou double</b> pour toute la partie. Active-le avant de répondre :
-                  points x2 si tu as juste, −${JOKER_PENALTY} si tu te trompes.</p></div>`;
+                <p class="joker-info">🃏 Tu as <b>${JOKERS_X2} jokers quitte ou double</b> pour toute la partie. Active-en un avant de répondre :
+                  points x2 si tu as juste, −${JOKER_PENALTY} si tu te trompes.</p>
+                <p class="joker-info">🎯 Tu as aussi <b>${SABOTAGES} joker sabotage</b> : vise un joueur, il perd ${SABOTAGE_PENALTY} points
+                  s'il a la bonne réponse. Tout le monde verra que c'est toi !</p></div>`;
         break;
       case "intro": {
         // Présentation des joueurs : le téléphone s'allume quand son pseudo passe à l'écran
@@ -259,7 +312,7 @@
         const medal = ["🥇", "🥈", "🥉"][(me.rank || 99) - 1] || "🏁";
         const awards = Object.values(me.awards || {}).map(a => `<p class="award-tag">🏅 Trophée ${esc(a)}</p>`).join("");
         body = `<div class="msg"><div class="big-emoji">${medal}</div><h2>Classement final : ${ordinal(me.rank || 1)}</h2>
-                <p>${me.score || 0} points. Merci d'avoir joué !</p>${awards}</div>`;
+                <p>${me.score || 0} points. Merci d'avoir joué !</p>${recapHtml()}${awards}</div>`;
         break;
       }
     }
@@ -267,9 +320,9 @@
     const score = me.score || 0;
     app.innerHTML = `
       <header class="me"><span class="who"><button class="rl" id="rl" title="Un souci ? Recharger la page (tu retrouves ta place)">↻</button>${esc(me.name)}</span>
-        ${jokerLeft() && st.phase !== "end" ? '<span class="jk" title="Joker disponible">🃏</span>' : ""}
+        ${st.phase !== "end" && (jokerLeft() || sabLeft()) ? `<span class="jk" title="Jokers disponibles">${"🃏".repeat(jokersLeft())}${sabLeft() ? "🎯" : ""}</span>` : ""}
         <span class="score"><span data-count="${score}">${celebrate ? score - (me.lastPoints || 0) : score}</span> pts</span></header>
-      ${body}`;
+      ${body}${pickerHtml()}`;
     if (celebrate) {
       app.querySelectorAll("[data-count]").forEach(el => countUp(el, +el.textContent, +el.dataset.count, 1200));
       if (navigator.vibrate) navigator.vibrate(me.lastCorrect ? [60, 50, 60] : 300);
@@ -281,6 +334,23 @@
       if (navigator.vibrate) navigator.vibrate(jokerArmed === st.q ? [30, 40, 30] : 20);
       render();
     };
+    const sb = document.getElementById("sabotage");
+    if (sb) sb.onclick = () => { if (navigator.vibrate) navigator.vibrate(20); openPicker(); };
+    const pk = document.getElementById("picker");
+    if (pk) {
+      pk.querySelectorAll(".pk").forEach(b => b.onclick = () => {
+        const p = roster && roster.find(r => r.id === b.dataset.id);
+        if (!p) return;
+        sabArmed = { q: st.q, id: p.id, name: p.name };
+        pickerOpen = false;
+        if (navigator.vibrate) navigator.vibrate([30, 40, 30]);
+        render();
+      });
+      const clear = document.getElementById("pk-clear");
+      if (clear) clear.onclick = () => { sabArmed = null; pickerOpen = false; render(); };
+      document.getElementById("pk-close").onclick = () => { pickerOpen = false; render(); };
+      pk.onclick = e => { if (e.target === pk) { pickerOpen = false; render(); } };   // un toucher à côté de la fenêtre la ferme
+    }
 
     if (st.phase === "question" && answered[st.q] === undefined && remaining() > 0) {
       app.querySelectorAll(".pad").forEach(b => b.onclick = () => answer(+b.dataset.a));
@@ -289,7 +359,7 @@
         const input = document.getElementById("txt");
         input.value = typed; // un nouvel affichage (joker, classement) ne doit pas effacer ce qui est tapé
         form.onsubmit = e => { e.preventDefault(); const v = input.value.trim(); if (v) answer(v); };
-        input.focus();
+        if (!pickerOpen) input.focus();
       }
       const dur = st.duration * 1000;
       timerId = setInterval(() => {
@@ -307,7 +377,8 @@
   function questionBody() {
     const mine = answered[st.q];
     if (refused[st.q]) return msg("⚠️", "Réponse non enregistrée", "Le serveur l'a refusée. Préviens ton prof !");
-    const jokerTag = jokerSent === st.q ? '<p class="joker-tag">🃏 Joker joué : quitte ou double !</p>' : "";
+    const jokerTag = (jokerSent === st.q ? '<p class="joker-tag">🃏 Joker joué : quitte ou double !</p>' : "")
+      + (sabSent && sabSent.q === st.q ? `<p class="joker-tag">🎯 Sabotage lancé${sabSent.name ? ` sur <b>${esc(sabSent.name)}</b>` : ""} : réponse à la correction…</p>` : "");
     if (typeof mine === "string") {
       return `<div class="msg"><div class="big-emoji">✍️</div><h2>Réponse envoyée !</h2>
               <p class="goodans">« ${esc(mine)} »</p>${jokerTag}<p>Regarde l'écran…</p></div>`;
@@ -350,6 +421,12 @@
       : `<p class="rank">Tu es ${ordinal(me.rank || 1)} sur ${st.nPlayers || 1}</p>${moveTag()}${passTags()}`;
     const goodAnswer = st.kind === "texte" ? esc(st.accepted) : st.options ? esc(st.options[st.correct]) : "";
     const pts = me.lastPoints || 0;
+    // Sabotages de cette question : celui que j'ai lancé, et celui que j'ai subi
+    const sab = me.lastSab, hurt = me.lastHit;
+    const sabTags = (sab ? (sab.r === "hit" ? `<p class="sab-tag good">🎯 Sabotage réussi : ${esc(sab.n)} perd ${sab.p} points !</p>`
+        : sab.r === "miss" ? `<p class="sab-tag">💨 Sabotage raté : ${esc(sab.n)} s'est trompé… ton joker est perdu.</p>`
+        : `<p class="sab-tag">🛡️ ${esc(sab.n)} avait déjà été visé avant toi : ton joker sabotage t'est rendu.</p>`) : "")
+      + (hurt ? `<p class="sab-tag hurt">😱 ${esc(hurt.by)} t'a sabordé : −${hurt.p} points</p>` : "");
     if (me.lastCorrect) {
       return {
         mood: "good",
@@ -358,7 +435,7 @@
                ${me.lastJoker ? '<p class="joker-tag">Quitte ou double gagné : points x2 !</p>' : ""}
                ${st.double ? '<p class="x2-banner small">⚡ Question à double points</p>' : ""}
                ${me.streak >= 2 ? `<p class="streak-tag">🔥 Série de ${me.streak} bonnes réponses</p>` : ""}
-               ${rank}</div>`
+               ${sabTags}${rank}</div>`
       };
     }
     const missed = me.lastAnswer === undefined || me.lastAnswer === null;
@@ -369,8 +446,20 @@
              ${me.lastJoker ? `<p class="pts">−<span data-count="${-pts}">${celebrate ? 0 : -pts}</span></p>
                <p class="joker-tag">🃏 Joker perdu…</p>` : ""}
              ${!missed && st.kind === "texte" ? `<p>Ta réponse : « ${esc(me.lastAnswer)} »</p>` : ""}
-             <p class="goodans">La bonne réponse : <b>${goodAnswer}</b></p>${rank}</div>`
+             <p class="goodans">La bonne réponse : <b>${goodAnswer}</b></p>${sabTags}${rank}</div>`
     };
+  }
+
+  // Le bilan de la partie, sur l'écran de fin
+  function recapHtml() {
+    const sc = st.scored || st.total || 0, ok = me.nOk || 0, li = [];
+    li.push(`<li>✅ <b>${ok}</b> / ${sc} bonnes réponses${sc ? ` (${Math.round(100 * ok / sc)} %)` : ""}</li>`);
+    if (ok) li.push(`<li>⚡ ${fmtSecs((me.tOk || 0) / ok)} en moyenne sur tes bonnes réponses</li>`);
+    if ((me.best || 0) >= 2) li.push(`<li>🔥 Meilleure série : ${me.best} d'affilée</li>`);
+    if (jokersUsed(me)) li.push(`<li>🃏 Jokers x2 : ${me.jWon || 0} gagné${(me.jWon || 0) > 1 ? "s" : ""}, ${me.jLost || 0} perdu${(me.jLost || 0) > 1 ? "s" : ""}</li>`);
+    if (me.nS) li.push(`<li>🎯 Sabotage : ${me.sabHit ? "réussi" : "raté"}</li>`);
+    if (me.sabTaken) li.push(`<li>😱 Sabordé ${me.sabTaken} fois</li>`);
+    return `<ul class="recap">${li.join("")}</ul>`;
   }
 
   async function answer(k) {
@@ -378,11 +467,15 @@
     if (answered[q] !== undefined) return;
     answered[q] = k;
     const joker = jokerArmed === q && jokerLeft() && st.kind !== "ouverte";
+    const sab = sabArmed && sabArmed.q === q && sabLeft() && st.kind !== "ouverte" ? sabArmed : null;
     if (joker) jokerSent = q;
+    if (sab) sabSent = { q, name: sab.name };
+    pickerOpen = false;
     if (navigator.vibrate) navigator.vibrate(40);
     render();
     const payload = typeof k === "string" ? { x: k.slice(0, 60), t: DB.TS } : { a: k, t: DB.TS };
     if (joker) payload.j = 1;
+    if (sab) payload.s = sab.id;                 // le joueur visé : le prof l'annonce à la correction
     const path = `games/${code}/answers/${q}/${pid}`;
     // Sans confirmation du serveur au bout de 2,5 s (connexion bloquée), la réponse repart aussi par HTTPS.
     // Si les deux arrivent, la seconde est simplement ignorée par les règles (une seule réponse par question).
@@ -397,6 +490,7 @@
       if (ex && (Number.isInteger(ex.a) || typeof ex.x === "string")) { acked = true; return; }
       refused[q] = true;
       if (joker) jokerSent = -1;
+      if (sab) sabSent = null;
       if (st && st.q === q) render();
     }
   }
